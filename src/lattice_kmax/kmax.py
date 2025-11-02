@@ -7,21 +7,26 @@ def _three_sphere_intersections(c1,r1,c2,r2,c3,r3,eps=1e-12):
     A = np.vstack([2*e1, 2*e2])         # plane system (2x3)
     b = np.array([r1**2 - r2**2 + np.dot(c2,c2) - np.dot(c1,c1),
                   r1**2 - r3**2 + np.dot(c3,c3) - np.dot(c1,c1)])
-    U,S,Vt = np.linalg.svd(A, full_matrices=True)
-    if (S > 1e-12).sum() < 2: return []
-    # Reconstruct: pad S with zeros to match dimensions
-    S_inv = np.zeros(3)
-    S_inv[:len(S)] = 1.0 / S
-    x0 = Vt.T @ np.diag(S_inv) @ U.T @ b  # one point on the line
-    v  = Vt.T[:, -1]  # null space vector
-    a = np.dot(v,v)
+    
+    # Use lstsq to solve for one point on the line (least-squares solution)
+    x0, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+    
+    # Get null space vector using SVD
+    U, S, Vt = np.linalg.svd(A, full_matrices=True)
+    v = Vt[-1, :]  # Last row of Vt is the null space vector
+    
+    # Solve for intersection points along the line x = x0 + t*v
+    a = np.dot(v, v)
     bq = 2*np.dot(x0, v)
-    cq = np.dot(x0,x0) - r1*r1
+    cq = np.dot(x0, x0) - r1*r1
     disc = bq*bq - 4*a*cq
-    if disc < -eps: return []
+    
+    if disc < -eps: 
+        return []
     if abs(disc) <= eps:
         t = -bq/(2*a)
         return [c1 + x0 + t*v]
+    
     rt = np.sqrt(max(0.0, disc))
     t1, t2 = (-bq-rt)/(2*a), (-bq+rt)/(2*a)
     return [c1 + x0 + t1*v, c1 + x0 + t2*v]
