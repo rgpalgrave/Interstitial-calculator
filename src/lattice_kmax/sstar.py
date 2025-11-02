@@ -29,6 +29,7 @@ def _triple_min_scale(centers, idxs, alpha_idx, tol=1e-14):
     a1, a2, a3 = alpha_idx[i1], alpha_idx[i2], alpha_idx[i3]
 
     # Two-plane system from subtracting sphere equations: A x = b0 - λ d, λ = s^2
+    # Using absolute coordinates for x
     A = 2.0 * np.vstack([c2 - c1, c3 - c1])  # 2x3
     if np.linalg.matrix_rank(A) < 2:
         return None  # collinear / degenerate triple
@@ -46,21 +47,23 @@ def _triple_min_scale(centers, idxs, alpha_idx, tol=1e-14):
     X0 = Ap @ b0
     X1 = -Ap @ d
 
-    # Sphere-1: |x|^2 - 2 c1·x + |c1|^2 = λ a1^2
-    # Tangency condition (minimal λ): discriminant of line-in-t is zero.
-    beta0 = np.dot(X0 - c1, n)
-    beta1 = np.dot(X1, n)
-    c0 = np.dot(X0, X0) - 2*np.dot(c1, X0) + np.dot(c1, c1)
-    c1coef = 2*(np.dot(X0, X1) - np.dot(c1, X1)) - a1*a1
-    c2 = np.dot(X1, X1)
+    # Sphere-1: |x - c1|^2 = λ a1^2 ; with x = X0 + λ X1 + t n (absolute coords)
+    x0m = X0 - c1
+    a = np.dot(n, n)
+    b = 2.0 * np.dot(x0m, n) + 2.0 * (np.dot(X1, n))  # but X1 multiplies λ; handled via quadratic below
+    # Derive quadratic in λ by requiring tangency (discriminant=0) after eliminating t:
+    # Line-sphere distance minimal at t* = - (x0m + λ X1)·n / |n|^2 ; plug back → quadratic in λ.
+    nn = a
+    pn = np.dot(X1, n) / nn
+    qn = np.dot(x0m, n) / nn
 
-    # Quadratic in λ: (beta1^2 - c2) λ^2 + (2 beta0 beta1 - c1coef) λ + (beta0^2 - c0) = 0
-    A2 = beta1*beta1 - c2
-    B2 = 2*beta0*beta1 - c1coef
-    C2 = beta0*beta0 - c0
+    # Distance^2 at optimal t: ||x0m + λ X1||^2 - nn*(qn + λ pn)^2
+    A2 = np.dot(X1, X1) - nn * (pn ** 2)
+    B2 = 2.0 * (np.dot(x0m, X1) - nn * qn * pn) - a1*a1
+    C2 = np.dot(x0m, x0m) - nn * (qn ** 2)
 
-    if abs(A2) < 1e-14:
-        if abs(B2) < 1e-14:
+    if abs(A2) < tol:
+        if abs(B2) < tol:
             return None
         lam = -C2 / B2
         if lam < 0:
@@ -101,10 +104,11 @@ def _quadruple_s_and_center(centers, idxs, alpha_idx, tol=1e-16):
     x0 = Ainv @ b0
     x1 = -Ainv @ d
 
-    # Tangency on sphere 0: |x|^2 - 2 c0·x + |c0|^2 - λ al0^2 = 0
+    # Tangency on sphere 0: |x - c0|^2 - λ al0^2 = 0
+    x0m = x0 - c0
     a = np.dot(x1, x1)
-    b = 2*np.dot(x0, x1) - 2*np.dot(c0, x1) - (al[0]**2)
-    c = np.dot(x0, x0) - 2*np.dot(c0, x0) + np.dot(c0, c0)
+    b = 2*np.dot(x0m, x1) - (al[0]**2)
+    c = np.dot(x0m, x0m)
 
     if abs(a) < tol:
         if abs(b) < tol:
@@ -133,35 +137,34 @@ def _quadruple_s_and_center(centers, idxs, alpha_idx, tol=1e-16):
 # -------------------------------------------------------
 def _three_sphere_intersections(c1, r1, c2, r2, c3, r3, eps=1e-12):
     """
-    Return 0/1/2 intersection points of three spheres (stable for near-tangent).
+    Return 0/1/2 intersection points of three spheres in absolute coordinates.
+    Robust near tangency.
     """
-    e1, e2 = c2 - c1, c3 - c1
-    A = np.vstack([2*e1, 2*e2])  # 2x3 planes
+    # Build two planes: from |x-c1|^2 = r1^2 & |x-c2|^2 = r2^2, etc.
+    A = np.vstack([2*(c2 - c1), 2*(c3 - c1)])  # 2x3
     b = np.array([r1*r1 - r2*r2 + np.dot(c2, c2) - np.dot(c1, c1),
                   r1*r1 - r3*r3 + np.dot(c3, c3) - np.dot(c1, c1)])
+
+    # Pseudoinverse gives minimal-norm solution x0 to A x = b, and nullspace dir n (A n ≈ 0)
+    Ap = np.linalg.pinv(A, rcond=1e-12)        # 3x2
+    x0 = Ap @ b                                 # absolute coords
     U, S, Vt = np.linalg.svd(A)
-    if (S > 1e-12).sum() < 2:
-        return []
-    # minimal-norm point on the intersection line: x0, direction n
-    Sinv = np.zeros_like(S)
-    nz = S > 1e-12
-    Sinv[nz] = 1.0 / S[nz]
-    Ap = Vt.T @ np.diag(Sinv) @ U.T  # 3x2
-    x0 = Ap @ b
-    n = Vt.T[:, -1]
-    # intersect with sphere 1 (center at origin in shifted frame)
+    n = Vt.T[:, -1]                             # line direction
+
+    # Intersect line x(t) = x0 + t n with sphere 1: |x - c1|^2 = r1^2
+    x0m = x0 - c1
     a = np.dot(n, n)
-    bq = 2*np.dot(x0, n)
-    cq = np.dot(x0, x0) - r1*r1
+    bq = 2*np.dot(x0m, n)
+    cq = np.dot(x0m, x0m) - r1*r1
     disc = bq*bq - 4*a*cq
     if disc < -eps:
         return []
     if abs(disc) <= eps:
         t = -bq/(2*a)
-        return [c1 + x0 + t*n]
+        return [x0 + t*n]
     rt = np.sqrt(max(0.0, disc))
     t1, t2 = (-bq - rt)/(2*a), (-bq + rt)/(2*a)
-    return [c1 + x0 + t1*n, c1 + x0 + t2*n]
+    return [x0 + t1*n, x0 + t2*n]
 
 
 def _postpass_check_at_s(centers, alpha_idx, neighbor_index, s, local_r, eps, kNN):
@@ -183,7 +186,7 @@ def _postpass_check_at_s(centers, alpha_idx, neighbor_index, s, local_r, eps, kN
         idxs = np.argsort(D, axis=1)[:, :kNN_eff + 1]
 
     mmax = 1
-    seen_pts = []  # simple de-dup by proximity
+    seen_pts = []  # de-dup by proximity
     for i in range(n):
         nbr = [int(j) for j in idxs[i][1:]]
         for j, k in combinations(nbr, 2):
@@ -194,7 +197,6 @@ def _postpass_check_at_s(centers, alpha_idx, neighbor_index, s, local_r, eps, kN
                 eps=1e-12
             )
             for x in pts:
-                # de-dup: skip if near a point we already checked
                 if any(np.linalg.norm(x - y) < 1e-8 for y in seen_pts):
                     continue
                 seen_pts.append(x)
@@ -305,14 +307,12 @@ def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6,
                         s_star[N] = s
 
     # -------- Post-pass multiplicity checks at candidate s --------
-    # Validate at promising scales (captures clean coincidences like s=0.5)
     cand_s = set()
     if np.isfinite(s2): cand_s.add(float(s2))
     if np.isfinite(s3): cand_s.add(float(s3))
     for s in quad_s_candidates:
         if np.isfinite(s):
             cand_s.add(float(s))
-    # (Optional: also include a tiny neighborhood around each s if needed)
     for s in sorted(cand_s):
         mmax = _postpass_check_at_s(centers, alpha_idx, neighbor_index, s, local_r, eps, kNN_eff)
         if mmax >= 1:
