@@ -3,10 +3,15 @@ import numpy as np
 from itertools import combinations
 from .utils import pairwise_lower_bound_s
 
+
 # ---------------------------
 # Pair candidate (exact N = 2)
 # ---------------------------
 def _pair_min_scale(centers, i, j, alpha_idx):
+    """
+    Minimal scale s for two spheres i,j to touch on the surface:
+        ||ci - cj|| = s (alpha_i + alpha_j)  =>  s = d / (ai + aj)
+    """
     d = np.linalg.norm(centers[i] - centers[j])
     return d / (alpha_idx[i] + alpha_idx[j])
 
@@ -16,40 +21,33 @@ def _pair_min_scale(centers, i, j, alpha_idx):
 # ---------------------------------------
 def _triple_min_scale(centers, idxs, alpha_idx, tol=1e-14):
     """
-    Minimal s such that there exists x with |x-ci| = s*alpha_i for i in the triple.
-    Works for arbitrary (fixed) ratios alpha_idx.
-    Returns s (float) or None if degenerate.
+    Minimal s such that there exists x with |x - c_i| = s*alpha_i for i in the triple.
+    Works for arbitrary fixed ratios alpha_idx. Returns s (float) or None if degenerate.
     """
     i1, i2, i3 = idxs
     c1, c2, c3 = centers[i1], centers[i2], centers[i3]
     a1, a2, a3 = alpha_idx[i1], alpha_idx[i2], alpha_idx[i3]
 
-    # Two-plane system from subtracting sphere equations (unknowns x in R^3):
-    # 2(c2-c1)·x = |c2|^2 - |c1|^2 + s^2(a2^2 - a1^2)
-    # 2(c3-c1)·x = |c3|^2 - |c1|^2 + s^2(a3^2 - a1^2)
-    A = 2.0 * np.vstack([c2 - c1, c3 - c1])          # 2x3
+    # Two-plane system from subtracting sphere equations: A x = b0 - λ d, λ = s^2
+    A = 2.0 * np.vstack([c2 - c1, c3 - c1])  # 2x3
     if np.linalg.matrix_rank(A) < 2:
-        return None  # collinear / degenerate
+        return None  # collinear / degenerate triple
 
     b0 = np.array([np.dot(c2, c2) - np.dot(c1, c1),
-                   np.dot(c3, c3) - np.dot(c1, c1)])   # 2
-    d  = np.array([a2*a2 - a1*a1, a3*a3 - a1*a1])      # 2
+                   np.dot(c3, c3) - np.dot(c1, c1)])
+    d = np.array([a2*a2 - a1*a1, a3*a3 - a1*a1])
 
-    # Pseudoinverse & nullspace of A
+    # Moore–Penrose pseudoinverse (3x2) and nullspace direction (3,)
+    Ap = np.linalg.pinv(A, rcond=1e-12)
     U, S, Vt = np.linalg.svd(A)
-    Sinv = np.zeros_like(S)
-    nz = S > 1e-14
-    Sinv[nz] = 1.0 / S[nz]
-    Ap = Vt.T @ np.diag(Sinv) @ U.T     # 3x2 pseudoinverse
-    n  = Vt.T[:, -1]                    # unit nullspace vector, A n = 0
+    n = Vt.T[:, -1]  # A @ n ≈ 0
 
-    # x(λ, t) = X0 + λ X1 + t n, with λ = s^2
+    # x(λ, t) = X0 + λ X1 + t n
     X0 = Ap @ b0
     X1 = -Ap @ d
 
-    # Impose sphere-1: |x|^2 - 2 c1·x + |c1|^2 = λ a1^2
-    # Substitute x = X0 + λ X1 + t n; choose minimal λ by requiring
-    # the line in t to be tangent → discriminant = 0:
+    # Sphere-1: |x|^2 - 2 c1·x + |c1|^2 = λ a1^2
+    # Plug x = X0 + λ X1 + t n. Minimal λ occurs when line in t is tangent → discriminant = 0.
     beta0 = np.dot(X0 - c1, n)
     beta1 = np.dot(X1, n)
     c0 = np.dot(X0, X0) - 2*np.dot(c1, X0) + np.dot(c1, c1)
@@ -96,7 +94,7 @@ def _quadruple_s_and_center(centers, idxs, alpha_idx, tol=1e-16):
     if np.linalg.matrix_rank(A) < 3:
         return None
     b0 = np.sum(P[1:]**2, axis=1) - np.sum(c0**2)
-    d  = (al[1:]**2 - al[0]**2)
+    d = (al[1:]**2 - al[0]**2)
     Ainv = np.linalg.inv(A)
 
     # x(λ) = x0 + λ x1, with λ = s^2
@@ -133,30 +131,39 @@ def _quadruple_s_and_center(centers, idxs, alpha_idx, tol=1e-16):
 # --------------------------------------------------------
 # Public: minimal s for N-way surface intersection (fixed ratios)
 # --------------------------------------------------------
-def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6, eps=1e-8):
+def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6, eps=1e-8, kNN=24):
     """
-    centers: (n,3) float array of sphere centers
-    alpha_idx: (n,) float array of per-center ratio alpha (mapped by lattice)
-    neighbor_index: NeighborIndex (KD-tree wrapper)
-    Returns dict {N: s_N_star} for N = 1..N_max (np.inf if none found in window).
+    centers: (n,3) array of sphere centers
+    alpha_idx: (n,) array of per-center alpha (fixed ratios mapped to each center)
+    neighbor_index: NeighborIndex (KD-tree wrapper with .tree exposed)
+    Returns dict {N: s_N_star} for N=1..N_max (np.inf if none found in window).
     """
     s_star = {N: np.inf for N in range(1, N_max + 1)}
     s_star[1] = 0.0  # trivial
 
     n = len(centers)
+    if n <= 1:
+        return s_star
 
     # Characteristic spacing to set a small local radius for multiplicity counting
-    if n > 1:
-        diffs = centers[1:] - centers[0]
-        a_char = np.min(np.linalg.norm(diffs, axis=1))
-    else:
-        a_char = 1.0
+    diffs = centers[1:] - centers[0]
+    a_char = float(np.min(np.linalg.norm(diffs, axis=1))) if len(diffs) else 1.0
     local_r = 2.5 * a_char
+
+    # === Use k-NN (default 24) to avoid missing true nearest neighbors at edges ===
+    kNN_eff = min(max(1, kNN), max(1, n - 1))
+    try:
+        # dists: (n, kNN+1), idxs includes self in column 0
+        dists, idxs = neighbor_index.tree.query(centers, k=kNN_eff + 1)
+    except Exception:
+        # Fallback: brute-force (small n)
+        D = np.linalg.norm(centers[:, None, :] - centers[None, :, :], axis=2)
+        idxs = np.argsort(D, axis=1)[:, :kNN_eff + 1]
 
     # --------- Pairs (N = 2) ----------
     s2 = np.inf
     for i in range(n):
-        for j in neighbor_index.list_for(i):
+        for j in idxs[i][1:]:  # skip self
             if j <= i:
                 continue
             s2 = min(s2, _pair_min_scale(centers, i, j, alpha_idx))
@@ -166,12 +173,13 @@ def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6, eps=1e-8):
     # --------- Triples (N = 3) --------
     s3 = np.inf
     for i in range(n):
-        nbr = [j for j in neighbor_index.list_for(i) if j > i]
+        nbr = [j for j in idxs[i][1:]]  # k-NN (no radius cutoff)
         for j, k in combinations(nbr, 2):
+            if j == i or k == i or j == k:
+                continue
             out = _triple_min_scale(centers, (i, j, k), alpha_idx)
-            if out is not None:
-                if out < s3:
-                    s3 = out
+            if out is not None and out < s3:
+                s3 = out
     if 3 <= N_max and s3 < s_star[3]:
         s_star[3] = s3
         # A true triple implies at least a pair; tighten s2 if needed
@@ -181,21 +189,20 @@ def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6, eps=1e-8):
     # ----- Quadruples and multiplicity counting (N >= 4) -----
     # Early pruning uses current best for N_max
     for i in range(n):
-        nbr = [j for j in neighbor_index.list_for(i) if j > i]
+        nbr = [j for j in neighbor_index.list_for(i) if j > i]  # radius-based to keep it local
         for j, k, l in combinations(nbr, 3):
-            idxs = (i, j, k, l)
-            al = np.array([alpha_idx[t] for t in idxs])
+            idxs4 = (i, j, k, l)
+            al4 = np.array([alpha_idx[t] for t in idxs4])
 
             # Pairwise LB on s for this quadruple
-            lb = pairwise_lower_bound_s(centers, idxs, al)
+            lb = pairwise_lower_bound_s(centers, idxs4, al4)
             if lb >= s_star.get(N_max, np.inf):
                 continue
 
-            out = _quadruple_s_and_center(centers, idxs, alpha_idx)
+            out = _quadruple_s_and_center(centers, idxs4, alpha_idx)
             if out is None:
                 continue
             s, x = out
-            # Prune if already worse than best N_max
             if s >= s_star.get(N_max, np.inf):
                 continue
 
