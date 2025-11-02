@@ -13,6 +13,7 @@ from lattice_kmax.geometry import LatticeSpec
 from lattice_kmax.cache import prepare_geometry
 from lattice_kmax.kmax import kmax_surface
 from lattice_kmax.sstar import s_star_fixed_ratios
+from lattice_kmax.fastscan import blazing_s_star
 
 # Optional: show package version to ensure hot reloads after edits
 try:
@@ -32,6 +33,10 @@ with st.sidebar:
     rcut_factor = st.number_input("Neighbour cutoff factor ×a", value=2.2, step=0.1, format="%.2f")
     kNN = st.slider("k-NN (pairs/triangles/tetra)", min_value=8, max_value=64, value=32, step=2)
     nmax = st.slider("Max N for s_N*", 1, 12, 6)
+with st.sidebar:
+    st.header("Mode")
+    mode = st.radio("Computation mode", ["Exact (quad solve)", "Blazing (visual-style)"], index=0)
+
 
 # ---------- Helper to build one lattice block ----------
 def lattice_block(name: str, default_kind="fcc", default_a=1.0, default_offset=(0.0,0.0,0.0)):
@@ -174,3 +179,25 @@ if run_sstar:
     st.caption("NaN = not found within current window/tolerance.")
 
 st.info("Tips: increase supercell and/or k-NN if results look window-dependent; tighten ε to confirm exact symmetries.")
+
+st.header("Minimal scales s_N* (fixed ratios)")
+run_sstar = st.button(f"Compute s_N* for N = 1..{nmax}", type="secondary")
+
+if run_sstar:
+    if mode.startswith("Exact"):
+        with st.spinner(f"Computing s_N* (kNN={kNN}, ε={eps:g})..."):
+            sstar = s_star_fixed_ratios(
+                geom.centers, geom.alpha_idx, geom.neighbors,
+                N_max=nmax, eps=eps, kNN=kNN
+            )
+    else:
+        with st.spinner("Computing s_N* (Blazing mode: pair-circle sampling)..."):
+            sstar = blazing_s_star(
+                geom.centers, geom.alpha_idx, geom.neighbors,
+                N_max=nmax,
+                k_pairs=48,            # speed knob
+                samples_per_circle=8,  # 6–8 typical
+                tol_abs=1e-3,          # 1–2e-3 good with a=1 scaling
+                tol_rel=1e-6,
+                max_events=2048
+            )
