@@ -8,10 +8,6 @@ from .utils import pairwise_lower_bound_s
 # Pair candidate (exact N = 2)
 # ---------------------------
 def _pair_min_scale(centers, i, j, alpha_idx):
-    """
-    Minimal scale s for two spheres i,j to touch on the surface:
-        ||ci - cj|| = s (alpha_i + alpha_j)
-    """
     d = np.linalg.norm(centers[i] - centers[j])
     return d / (alpha_idx[i] + alpha_idx[j])
 
@@ -20,44 +16,31 @@ def _pair_min_scale(centers, i, j, alpha_idx):
 # Triple candidate (exact N = 3), general
 # ---------------------------------------
 def _triple_min_scale(centers, idxs, alpha_idx, tol=1e-14):
-    """
-    Minimal s such that there exists x with |x-ci| = s*alpha_i for i in the triple.
-    Works for arbitrary fixed ratios alpha_idx. Returns s (float) or None if degenerate.
-    """
     i1, i2, i3 = idxs
     c1, c2, c3 = centers[i1], centers[i2], centers[i3]
     a1, a2, a3 = alpha_idx[i1], alpha_idx[i2], alpha_idx[i3]
 
-    # Two-plane system from subtracting sphere equations: A x = b0 - λ d, λ = s^2
-    # Using absolute coordinates for x
     A = 2.0 * np.vstack([c2 - c1, c3 - c1])  # 2x3
     if np.linalg.matrix_rank(A) < 2:
-        return None  # collinear / degenerate triple
+        return None
 
     b0 = np.array([np.dot(c2, c2) - np.dot(c1, c1),
                    np.dot(c3, c3) - np.dot(c1, c1)])
     d = np.array([a2*a2 - a1*a1, a3*a3 - a1*a1])
 
-    # Moore–Penrose pseudoinverse (3x2) and nullspace
-    Ap = np.linalg.pinv(A, rcond=1e-12)
+    Ap = np.linalg.pinv(A, rcond=1e-12)       # 3x2
     U, S, Vt = np.linalg.svd(A)
-    n = Vt.T[:, -1]  # A @ n ≈ 0
+    n = Vt.T[:, -1]                           # A@n ≈ 0
 
-    # x(λ, t) = X0 + λ X1 + t n
     X0 = Ap @ b0
     X1 = -Ap @ d
 
-    # Sphere-1: |x - c1|^2 = λ a1^2 ; with x = X0 + λ X1 + t n (absolute coords)
+    # Line-sphere distance minimisation (absolute coords):
     x0m = X0 - c1
-    a = np.dot(n, n)
-    b = 2.0 * np.dot(x0m, n) + 2.0 * (np.dot(X1, n))  # but X1 multiplies λ; handled via quadratic below
-    # Derive quadratic in λ by requiring tangency (discriminant=0) after eliminating t:
-    # Line-sphere distance minimal at t* = - (x0m + λ X1)·n / |n|^2 ; plug back → quadratic in λ.
-    nn = a
+    nn = np.dot(n, n)
     pn = np.dot(X1, n) / nn
     qn = np.dot(x0m, n) / nn
 
-    # Distance^2 at optimal t: ||x0m + λ X1||^2 - nn*(qn + λ pn)^2
     A2 = np.dot(X1, X1) - nn * (pn ** 2)
     B2 = 2.0 * (np.dot(x0m, X1) - nn * qn * pn) - a1*a1
     C2 = np.dot(x0m, x0m) - nn * (qn ** 2)
@@ -86,10 +69,6 @@ def _triple_min_scale(centers, idxs, alpha_idx, tol=1e-14):
 # Quadruple candidate (N >= 4): Apollonius / orthosphere
 # -------------------------------------------------------
 def _quadruple_s_and_center(centers, idxs, alpha_idx, tol=1e-16):
-    """
-    Solve for (s, x) where four spheres (fixed ratios) are tangent at x.
-    Returns (s, x) or None.
-    """
     P = np.vstack([centers[i] for i in idxs])    # 4x3
     al = np.array([alpha_idx[i] for i in idxs])  # 4
     c0 = P[0]
@@ -100,11 +79,9 @@ def _quadruple_s_and_center(centers, idxs, alpha_idx, tol=1e-16):
     d = (al[1:]**2 - al[0]**2)
     Ainv = np.linalg.inv(A)
 
-    # x(λ) = x0 + λ x1, with λ = s^2
     x0 = Ainv @ b0
     x1 = -Ainv @ d
 
-    # Tangency on sphere 0: |x - c0|^2 - λ al0^2 = 0
     x0m = x0 - c0
     a = np.dot(x1, x1)
     b = 2*np.dot(x0m, x1) - (al[0]**2)
@@ -137,26 +114,27 @@ def _quadruple_s_and_center(centers, idxs, alpha_idx, tol=1e-16):
 # -------------------------------------------------------
 def _three_sphere_intersections(c1, r1, c2, r2, c3, r3, eps=1e-12):
     """
-    Return 0/1/2 intersection points of three spheres in absolute coordinates.
-    Robust near tangency.
+    Return 0/1/2 intersection points of three spheres (absolute coords).
     """
-    # Build two planes: from |x-c1|^2 = r1^2 & |x-c2|^2 = r2^2, etc.
     A = np.vstack([2*(c2 - c1), 2*(c3 - c1)])  # 2x3
-    b = np.array([r1*r1 - r2*r2 + np.dot(c2, c2) - np.dot(c1, c1),
-                  r1*r1 - r3*r3 + np.dot(c3, c3) - np.dot(c1, c1)])
+    b = np.array([
+        r1*r1 - r2*r2 + np.dot(c2, c2) - np.dot(c1, c1),
+        r1*r1 - r3*r3 + np.dot(c3, c3) - np.dot(c1, c1),
+    ])
 
-    # Pseudoinverse gives minimal-norm solution x0 to A x = b, and nullspace dir n (A n ≈ 0)
     Ap = np.linalg.pinv(A, rcond=1e-12)        # 3x2
-    x0 = Ap @ b                                 # absolute coords
+    x0 = Ap @ b
     U, S, Vt = np.linalg.svd(A)
+    if (S > 1e-12).sum() < 2:
+        return []
     n = Vt.T[:, -1]                             # line direction
 
-    # Intersect line x(t) = x0 + t n with sphere 1: |x - c1|^2 = r1^2
     x0m = x0 - c1
     a = np.dot(n, n)
     bq = 2*np.dot(x0m, n)
     cq = np.dot(x0m, x0m) - r1*r1
     disc = bq*bq - 4*a*cq
+
     if disc < -eps:
         return []
     if abs(disc) <= eps:
@@ -167,47 +145,57 @@ def _three_sphere_intersections(c1, r1, c2, r2, c3, r3, eps=1e-12):
     return [x0 + t1*n, x0 + t2*n]
 
 
-def _postpass_check_at_s(centers, alpha_idx, neighbor_index, s, local_r, eps, kNN):
+def _postpass_check_at_s(centers, alpha_idx, neighbor_index, s,
+                         local_r, eps,
+                         postpass_triplet_k=12, max_triplet_tests=4000,
+                         early_stop_N=None):
     """
     For a given scale s, generate candidate intersection points by 3-sphere
-    intersections from k-NN neighborhoods, and return the maximum multiplicity m.
+    intersections from a reduced k-NN and return the maximum multiplicity m.
+    Limits work via postpass_triplet_k and max_triplet_tests.
     """
     if not np.isfinite(s) or s <= 0:
         return 1
     radii = s * alpha_idx
     n = len(centers)
 
-    # k-NN indices (include self)
-    kNN_eff = min(max(1, kNN), max(1, n - 1))
+    # Smaller k just for the post-pass to bound combinations
+    k_eff = min(max(1, postpass_triplet_k), max(1, n - 1))
     try:
-        _, idxs = neighbor_index.tree.query(centers, k=kNN_eff + 1)
+        _, idxs = neighbor_index.tree.query(centers, k=k_eff + 1)
     except Exception:
         D = np.linalg.norm(centers[:, None, :] - centers[None, :, :], axis=2)
-        idxs = np.argsort(D, axis=1)[:, :kNN_eff + 1]
+        idxs = np.argsort(D, axis=1)[:, :k_eff + 1]
 
     mmax = 1
-    seen_pts = []  # de-dup by proximity
+    seen_pts = []
+    tested = 0
     for i in range(n):
         nbr = [int(j) for j in idxs[i][1:]]
         for j, k in combinations(nbr, 2):
             pts = _three_sphere_intersections(
-                centers[i], radii[i],
-                centers[j], radii[j],
-                centers[k], radii[k],
-                eps=1e-12
+                centers[i], radii[i], centers[j], radii[j], centers[k], radii[k]
             )
+            tested += 1
             for x in pts:
+                # de-dup tested points
                 if any(np.linalg.norm(x - y) < 1e-8 for y in seen_pts):
                     continue
                 seen_pts.append(x)
+
                 loc = neighbor_index.local_around_point(x, local_r)
                 d = np.linalg.norm(centers[loc] - x, axis=1)
                 targ = radii[loc]
                 err = np.abs(d - targ)
-                thr = eps + 1e-6 * np.maximum(1.0, targ)  # relative + absolute
+                thr = eps + 1e-6 * np.maximum(1.0, targ)
                 m = int(np.sum(err <= thr))
                 if m > mmax:
                     mmax = m
+                    # early stop if we've already matched the current best need
+                    if early_stop_N is not None and mmax >= early_stop_N:
+                        return mmax
+            if tested >= max_triplet_tests:
+                return mmax
     return mmax
 
 
@@ -215,11 +203,13 @@ def _postpass_check_at_s(centers, alpha_idx, neighbor_index, s, local_r, eps, kN
 # Public: minimal s for N-way surface intersection (fixed ratios)
 # --------------------------------------------------------
 def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6,
-                        eps=1e-8, kNN=32):
+                        eps=1e-8, kNN=32,
+                        max_postpass_scales=16,   # cap number of scales to validate
+                        postpass_triplet_k=12,    # smaller k for post-pass
+                        max_triplet_tests=4000):  # cap triplet checks per s
     """
     Returns dict {N: s_N_star} for N=1..N_max (np.inf if not found in window).
-    Uses k-NN neighbourhoods for N>=2 to avoid cutoff artefacts at window edges.
-    Also validates at candidate s values using triplet-seed intersections.
+    Uses k-NN neighbourhoods for N>=2; validates a bounded set of scales via fast post-pass.
     """
     s_star = {N: np.inf for N in range(1, N_max + 1)}
     s_star[1] = 0.0
@@ -231,9 +221,9 @@ def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6,
     # Characteristic spacing for local multiplicity search radius
     diffs = centers[1:] - centers[0]
     a_char = float(np.min(np.linalg.norm(diffs, axis=1))) if len(diffs) else 1.0
-    local_r = 3.0 * a_char  # robust in mixed-α cases
+    local_r = 3.0 * a_char
 
-    # --- k-NN query (includes self in column 0) ---
+    # --- k-NN for main search (includes self in column 0) ---
     kNN_eff = min(max(1, kNN), max(1, n - 1))
     try:
         dists, idxs = neighbor_index.tree.query(centers, k=kNN_eff + 1)
@@ -268,7 +258,7 @@ def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6,
 
     # -------- Quadruples (N>=4) --------
     seen = set()
-    quad_s_candidates = []  # collect s from quadruples for post-pass validation
+    quad_s_candidates = []
     for i in range(n):
         nbr = [int(j) for j in idxs[i][1:]]
         for j, k, l in combinations(nbr, 3):
@@ -280,7 +270,6 @@ def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6,
             idxs4 = (i, j, k, l)
             al4 = np.array([alpha_idx[t] for t in idxs4])
 
-            # Pairwise LB on s for this quadruple
             lb = pairwise_lower_bound_s(centers, idxs4, al4)
             if lb >= s_star.get(N_max, np.inf):
                 continue
@@ -289,7 +278,7 @@ def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6,
             if out is None:
                 continue
             s, x = out
-            quad_s_candidates.append(s)
+            quad_s_candidates.append(float(s))
             if s >= s_star.get(N_max, np.inf):
                 continue
 
@@ -306,15 +295,31 @@ def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6,
                     if s < s_star[N]:
                         s_star[N] = s
 
-    # -------- Post-pass multiplicity checks at candidate s --------
-    cand_s = set()
-    if np.isfinite(s2): cand_s.add(float(s2))
-    if np.isfinite(s3): cand_s.add(float(s3))
-    for s in quad_s_candidates:
-        if np.isfinite(s):
-            cand_s.add(float(s))
-    for s in sorted(cand_s):
-        mmax = _postpass_check_at_s(centers, alpha_idx, neighbor_index, s, local_r, eps, kNN_eff)
+    # -------- Post-pass multiplicity checks at a bounded set of s --------
+    # Build candidate s set: {s2, s3} U smallest M from quads, dedup within rel tol.
+    cand = []
+    if np.isfinite(s2): cand.append(float(s2))
+    if np.isfinite(s3): cand.append(float(s3))
+    quad_s_candidates.sort()
+    for s in quad_s_candidates[:max_postpass_scales]:
+        cand.append(s)
+
+    # Deduplicate (relative tol 1e-8)
+    cand_sorted = []
+    for s in sorted(cand):
+        if not cand_sorted or abs(s - cand_sorted[-1]) > 1e-8 * max(1.0, cand_sorted[-1]):
+            cand_sorted.append(s)
+
+    # Post-check each s with small k and capped triplet count; early stop when possible
+    for s in cand_sorted:
+        # If we already have all N up to N_max at <= s, we could skip; simple guard:
+        # nothing fancy—just run the check and update.
+        mmax = _postpass_check_at_s(
+            centers, alpha_idx, neighbor_index, s, local_r, eps,
+            postpass_triplet_k=postpass_triplet_k,
+            max_triplet_tests=max_triplet_tests,
+            early_stop_N=N_max
+        )
         if mmax >= 1:
             for N in range(1, min(N_max, mmax) + 1):
                 if s < s_star[N]:
