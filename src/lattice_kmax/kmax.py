@@ -9,7 +9,7 @@ def _three_sphere_intersections(c1,r1,c2,r2,c3,r3,eps=1e-12):
                   r1**2 - r3**2 + np.dot(c3,c3) - np.dot(c1,c1)])
     U,S,Vt = np.linalg.svd(A, full_matrices=True)
     if (S > 1e-12).sum() < 2: return []
-    # Reconstruct: pad S with zeros to match dimensions, solve A^T A c = A^T b for c
+    # Reconstruct: pad S with zeros to match dimensions
     S_inv = np.zeros(3)
     S_inv[:len(S)] = 1.0 / S
     x0 = Vt.T @ np.diag(S_inv) @ U.T @ b  # one point on the line
