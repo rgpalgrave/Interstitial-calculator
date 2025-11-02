@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lattice-kmax"
+version = "0.1.0"
+description = "N-way sphere surface intersections on Bravais lattices"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy>=1.23",
+  "scipy>=1.10",
+  "typer>=0.9",
+]
+
+[project.scripts]
+kmax = "lattice_kmax.cli:kmax_cmd"
+sstar = "lattice_kmax.cli:sstar_cmd"
