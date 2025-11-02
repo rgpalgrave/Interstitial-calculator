@@ -4,13 +4,16 @@ from itertools import combinations
 def _three_sphere_intersections(c1,r1,c2,r2,c3,r3,eps=1e-12):
     # Reduce to line-sphere intersection (sphere 1 at origin frame)
     e1, e2 = c2-c1, c3-c1
-    A = np.vstack([2*e1, 2*e2])         # plane system
+    A = np.vstack([2*e1, 2*e2])         # plane system (2x3)
     b = np.array([r1**2 - r2**2 + np.dot(c2,c2) - np.dot(c1,c1),
                   r1**2 - r3**2 + np.dot(c3,c3) - np.dot(c1,c1)])
-    U,S,Vt = np.linalg.svd(A)
+    U,S,Vt = np.linalg.svd(A, full_matrices=True)
     if (S > 1e-12).sum() < 2: return []
-    x0 = Vt.T @ (U.T @ b / np.r_[S,1][:2])  # one point on the line
-    v  = Vt.T[:, -1]
+    # Reconstruct: pad S with zeros to match dimensions, solve A^T A c = A^T b for c
+    S_inv = np.zeros(3)
+    S_inv[:len(S)] = 1.0 / S
+    x0 = Vt.T @ np.diag(S_inv) @ U.T @ b  # one point on the line
+    v  = Vt.T[:, -1]  # null space vector
     a = np.dot(v,v)
     bq = 2*np.dot(x0, v)
     cq = np.dot(x0,x0) - r1*r1
