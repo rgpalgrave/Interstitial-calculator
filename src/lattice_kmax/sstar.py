@@ -1,4 +1,4 @@
-# src/lattice_kmax/sstar.py
+# lattice_kmax/sstar.py
 import numpy as np
 from itertools import combinations
 from .utils import pairwise_lower_bound_s
@@ -22,34 +22,39 @@ def _pair_min_scale(centers, i, j, alpha_idx):
 def _triple_min_scale(centers, idxs, alpha_idx, tol=1e-14):
     """
     Minimal s such that there exists x with |x-ci| = s*alpha_i for i in the triple.
-    Works for arbitrary fixed ratios alpha_idx.
+    Works for arbitrary fixed ratios alpha_idx. Returns s (float) or None if degenerate.
     """
     i1, i2, i3 = idxs
     c1, c2, c3 = centers[i1], centers[i2], centers[i3]
     a1, a2, a3 = alpha_idx[i1], alpha_idx[i2], alpha_idx[i3]
 
-    A = 2.0 * np.vstack([c2 - c1, c3 - c1])  # 2×3
+    # Two-plane system from subtracting sphere equations: A x = b0 - λ d, λ = s^2
+    A = 2.0 * np.vstack([c2 - c1, c3 - c1])  # 2x3
     if np.linalg.matrix_rank(A) < 2:
-        return None
+        return None  # collinear / degenerate triple
 
     b0 = np.array([np.dot(c2, c2) - np.dot(c1, c1),
                    np.dot(c3, c3) - np.dot(c1, c1)])
     d = np.array([a2*a2 - a1*a1, a3*a3 - a1*a1])
 
-    # Pseudoinverse and nullspace
+    # Moore–Penrose pseudoinverse (3x2) and nullspace
     Ap = np.linalg.pinv(A, rcond=1e-12)
     U, S, Vt = np.linalg.svd(A)
-    n = Vt.T[:, -1]  # A@n ≈ 0
+    n = Vt.T[:, -1]  # A @ n ≈ 0
 
+    # x(λ, t) = X0 + λ X1 + t n
     X0 = Ap @ b0
     X1 = -Ap @ d
 
+    # Sphere-1: |x|^2 - 2 c1·x + |c1|^2 = λ a1^2
+    # Tangency condition (minimal λ): discriminant of line-in-t is zero.
     beta0 = np.dot(X0 - c1, n)
     beta1 = np.dot(X1, n)
     c0 = np.dot(X0, X0) - 2*np.dot(c1, X0) + np.dot(c1, c1)
     c1coef = 2*(np.dot(X0, X1) - np.dot(c1, X1)) - a1*a1
     c2 = np.dot(X1, X1)
 
+    # Quadratic in λ: (beta1^2 - c2) λ^2 + (2 beta0 beta1 - c1coef) λ + (beta0^2 - c0) = 0
     A2 = beta1*beta1 - c2
     B2 = 2*beta0*beta1 - c1coef
     C2 = beta0*beta0 - c0
@@ -78,19 +83,25 @@ def _triple_min_scale(centers, idxs, alpha_idx, tol=1e-14):
 # Quadruple candidate (N >= 4): Apollonius / orthosphere
 # -------------------------------------------------------
 def _quadruple_s_and_center(centers, idxs, alpha_idx, tol=1e-16):
-    P = np.vstack([centers[i] for i in idxs])    # 4×3
+    """
+    Solve for (s, x) where four spheres (fixed ratios) are tangent at x.
+    Returns (s, x) or None.
+    """
+    P = np.vstack([centers[i] for i in idxs])    # 4x3
     al = np.array([alpha_idx[i] for i in idxs])  # 4
     c0 = P[0]
-    A = 2.0 * (P[1:] - c0)                       # 3×3
+    A = 2.0 * (P[1:] - c0)                       # 3x3
     if np.linalg.matrix_rank(A) < 3:
         return None
     b0 = np.sum(P[1:]**2, axis=1) - np.sum(c0**2)
     d = (al[1:]**2 - al[0]**2)
     Ainv = np.linalg.inv(A)
 
+    # x(λ) = x0 + λ x1, with λ = s^2
     x0 = Ainv @ b0
     x1 = -Ainv @ d
 
+    # Tangency on sphere 0: |x|^2 - 2 c0·x + |c0|^2 - λ al0^2 = 0
     a = np.dot(x1, x1)
     b = 2*np.dot(x0, x1) - 2*np.dot(c0, x1) - (al[0]**2)
     c = np.dot(x0, x0) - 2*np.dot(c0, x0) + np.dot(c0, c0)
@@ -123,8 +134,8 @@ def _quadruple_s_and_center(centers, idxs, alpha_idx, tol=1e-16):
 def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6,
                         eps=1e-8, kNN=32):
     """
-    Returns dict {N: s_N_star} for N=1..N_max.
-    Uses k-NN neighbourhoods for all N>=2 to avoid cutoff artefacts.
+    Returns dict {N: s_N_star} for N=1..N_max (np.inf if not found in window).
+    Uses k-NN neighbourhoods for N>=2 to avoid cutoff artefacts at window edges.
     """
     s_star = {N: np.inf for N in range(1, N_max + 1)}
     s_star[1] = 0.0
@@ -133,15 +144,17 @@ def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6,
     if n <= 1:
         return s_star
 
+    # Characteristic spacing for local multiplicity search radius
     diffs = centers[1:] - centers[0]
     a_char = float(np.min(np.linalg.norm(diffs, axis=1))) if len(diffs) else 1.0
-    local_r = 2.5 * a_char
+    local_r = 3.0 * a_char  # slightly larger than 2.5 to be robust in mixed-α cases
 
-    # --- k-NN query ---
+    # --- k-NN query (includes self in column 0) ---
     kNN_eff = min(max(1, kNN), max(1, n - 1))
     try:
         dists, idxs = neighbor_index.tree.query(centers, k=kNN_eff + 1)
     except Exception:
+        # Fallback: brute force (small n)
         D = np.linalg.norm(centers[:, None, :] - centers[None, :, :], axis=2)
         idxs = np.argsort(D, axis=1)[:, :kNN_eff + 1]
 
@@ -183,6 +196,7 @@ def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6,
             idxs4 = (i, j, k, l)
             al4 = np.array([alpha_idx[t] for t in idxs4])
 
+            # Pairwise LB on s for this quadruple
             lb = pairwise_lower_bound_s(centers, idxs4, al4)
             if lb >= s_star.get(N_max, np.inf):
                 continue
@@ -194,10 +208,13 @@ def s_star_fixed_ratios(centers, alpha_idx, neighbor_index, N_max=6,
             if s >= s_star.get(N_max, np.inf):
                 continue
 
+            # Multiplicity at (x, s): robust relative + absolute tolerance
             loc = neighbor_index.local_around_point(x, local_r)
             d = np.linalg.norm(centers[loc] - x, axis=1)
             targ = s * np.asarray([alpha_idx[t] for t in loc])
-            m = int(np.sum(np.abs(d - targ) <= eps))
+            err = np.abs(d - targ)
+            thr = eps + 1e-6 * np.maximum(1.0, targ)  # relative 1e-6 + absolute floor
+            m = int(np.sum(err <= thr))
 
             if m >= 1:
                 for N in range(1, min(N_max, m) + 1):
