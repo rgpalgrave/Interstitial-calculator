@@ -119,7 +119,7 @@ if use_second:
     ))
 
 # ---------- Cache geometry build ----------
-@st.cache_resource(show_spinner=False, persist=False)
+@st.cache_resource(show_spinner=False)
 def build_geometry(specs_tuple, alphas_tuple, rcut_factor):
     # specs_tuple: tuple of serialisable dicts
     specs_objs = [LatticeSpec(**d) for d in specs_tuple]
